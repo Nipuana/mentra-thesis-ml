@@ -1,0 +1,7 @@
+# Tasks call this service's own venv python explicitly (relative to the folder
+# the task runs in), so they use the right interpreter even if a different venv
+# happens to be active on PATH.
+[tool.taskipy.tasks]
+dev = ".venv\\Scripts\\python.exe -m uvicorn app.main:app --port 8100"
+train = ".venv\\Scripts\\python.exe -m app.pipelines.train_pipeline"
+eval = ".venv\\Scripts\\python.exe -m app.pipelines.evaluate"
