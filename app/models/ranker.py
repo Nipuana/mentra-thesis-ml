@@ -97,7 +97,12 @@ def build_training_set(
         n_neg = min(len(pos) * n_neg_per_pos, len(all_items) - len(pos))
         negs: list[str] = []
         if n_neg > 0:
-            pool = rng.choice(item_arr, size=n_neg * 2 + 10, replace=False)
+            # Oversample so positives can be filtered out and still leave n_neg,
+            # but never ask for more distinct items than the catalogue holds:
+            # a learner with many positives relative to the catalogue would
+            # otherwise push the request past the population size.
+            pool_size = min(len(item_arr), n_neg * 2 + 10)
+            pool = rng.choice(item_arr, size=pool_size, replace=False)
             negs = [c for c in pool if c not in pos_items][:n_neg]
 
         cand = pos + negs
