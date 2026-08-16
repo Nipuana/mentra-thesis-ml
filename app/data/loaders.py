@@ -52,17 +52,21 @@ WHERE c.status = 'published'
 """
 
 # --- Weighted implicit-feedback interactions (has user_id — the user's own data) ---
+# `ts` is the most recent moment the user acted on the course. Evaluation splits
+# on it so the held-out set is strictly in the future relative to training,
+# rather than a random sample of each user's history.
 _INTERACTIONS_SQL = """
 WITH signals AS (
     SELECT user_id::text AS uid, course_id::text AS cid,
-           (:w_enroll + :w_completion * (completion_percent / 100.0)) AS w
+           (:w_enroll + :w_completion * (completion_percent / 100.0)) AS w,
+           enrolled_at AS ts
     FROM enrollments
     UNION ALL
-    SELECT user_id::text, course_id::text, :w_review * (rating / 5.0) FROM reviews
+    SELECT user_id::text, course_id::text, :w_review * (rating / 5.0), created_at FROM reviews
     UNION ALL
-    SELECT user_id::text, course_id::text, :w_wishlist FROM wishlist_items
+    SELECT user_id::text, course_id::text, :w_wishlist, created_at FROM wishlist_items
 )
-SELECT uid AS user_id, cid AS course_id, SUM(w)::float AS weight
+SELECT uid AS user_id, cid AS course_id, SUM(w)::float AS weight, MAX(ts) AS ts
 FROM signals
 GROUP BY uid, cid
 """

@@ -1,13 +1,18 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.schemas import HealthResponse, RecResponse
+from app.core.auth import require_token
 from app.pipelines import evaluate as evaluate_mod
 from app.pipelines import research as research_mod
 from app.serving import state
 
-router = APIRouter()
+# `/health` stays open so process supervisors and container health checks can
+# probe it without a credential; everything that exposes model output or data
+# requires the shared token.
+health_router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_token)])
 
 # Offline evaluation is a few seconds to compute; cache it in-process.
 _METRICS_CACHE: dict | None = None
@@ -24,7 +29,7 @@ def _require_ready():
     return state.recommender
 
 
-@router.get("/health", response_model=HealthResponse, tags=["health"])
+@health_router.get("/health", response_model=HealthResponse, tags=["health"])
 def health() -> HealthResponse:
     ready = state.recommender is not None
     manifest = state.recommender.manifest if ready else {}

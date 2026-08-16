@@ -42,7 +42,11 @@ class Recommender:
         self.cf = store.load("cf")
         self.courses: pd.DataFrame = store.load("courses")
         self.user_profiles: dict[str, dict[str, float]] = store.load("user_profiles")
-        self.ranker = store.load("ranker") if store.exists("ranker") else None
+        # The ranker artifact is always loaded when present so it can be
+        # inspected and evaluated; `USE_RANKER` decides whether it scores live
+        # traffic (see the note on that setting for the evidence).
+        self.ranker_artifact = store.load("ranker") if store.exists("ranker") else None
+        self.ranker = self.ranker_artifact if settings.USE_RANKER else None
         self.manifest = store.read_manifest()
 
         self.course_feat = ranker_mod.course_feature_table(self.courses)

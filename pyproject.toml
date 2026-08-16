@@ -5,3 +5,12 @@
 dev = ".venv\\Scripts\\python.exe -m uvicorn app.main:app --port 8100"
 train = ".venv\\Scripts\\python.exe -m app.pipelines.train_pipeline"
 eval = ".venv\\Scripts\\python.exe -m app.pipelines.evaluate"
+ablation = ".venv\\Scripts\\python.exe -m app.pipelines.evaluate ablation"
+tune = ".venv\\Scripts\\python.exe -m app.pipelines.evaluate tune"
+test = ".venv\\Scripts\\python.exe -m pytest -q"
+
+# Split and metric tests are pure functions over synthetic frames — no database
+# and no trained artifacts required.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
