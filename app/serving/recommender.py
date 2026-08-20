@@ -83,15 +83,19 @@ class Recommender:
 
         cf_scores_full = self.cf.scores_for_user(user_id)
 
+        # The three normalised components are always computed, even when the
+        # ranker is scoring, because they are what the explanation is derived
+        # from. See `_attribute` for the limitation this carries under the ranker.
+        cf_n = _minmax({c: cf_scores_full.get(c, 0.0) for c in cand})
+        ct_n = _minmax({c: content_scores.get(c, 0.0) for c in cand})
+        pop_n = _minmax({c: self.pop_scores.get(c, 0.0) for c in cand})
+
         # --- scoring ---
         if self.ranker is not None:
             X = ranker_mod.feature_frame(cand, cf_scores_full, content_scores, self.course_feat)
             probs = self.ranker.score(X)
             score = dict(zip(cand, probs))
         else:
-            cf_n = _minmax({c: cf_scores_full.get(c, 0.0) for c in cand})
-            ct_n = _minmax({c: content_scores.get(c, 0.0) for c in cand})
-            pop_n = _minmax({c: self.pop_scores.get(c, 0.0) for c in cand})
             score = {
                 c: settings.BLEND_CF * cf_n[c]
                 + settings.BLEND_CONTENT * ct_n.get(c, 0.0)
@@ -101,21 +105,48 @@ class Recommender:
 
         ranked = sorted(cand, key=lambda c: -score[c])[:k]
 
-        cf_set, content_set = set(cf_ids[:20]), set(content_ids[:20])
         results = []
         for c in ranked:
-            if c in content_set:
-                reason = f"Because you're into {self.meta[c]['sector_name']}"
-            elif c in cf_set:
-                reason = "Learners like you also took this"
-            else:
-                reason = "Popular pick for you"
-            results.append(self._one(c, float(score[c]), reason))
+            source, share = self._attribute(c, cf_n, ct_n, pop_n)
+            results.append(self._one(c, float(score[c]), self._reason_text(c, source), source, share))
         return results
+
+    # ---------- explanation ----------
+    def _attribute(self, course_id: str, cf_n: dict, ct_n: dict, pop_n: dict) -> tuple[str, float]:
+        """Which blend component actually drove this course's score.
+
+        The reason must follow the ranking rather than be inferred from which
+        candidate list the course arrived on. Attribution is therefore the
+        largest of the three *weighted* contributions, and the share it
+        represents is returned alongside so the claim is auditable rather than
+        asserted.
+
+        Caveat, stated because it matters ethically: when the LightGBM ranker is
+        enabled the score is not this weighted sum, so the attribution describes
+        the blend components rather than the ranker's own feature attribution.
+        The ranker is not deployed (Chapter 23); were it deployed, this
+        explanation would need to be replaced by a per-prediction attribution.
+        """
+        parts = {
+            "collaborative": settings.BLEND_CF * cf_n.get(course_id, 0.0),
+            "content": settings.BLEND_CONTENT * ct_n.get(course_id, 0.0),
+            "popularity": settings.BLEND_POPULARITY * pop_n.get(course_id, 0.0),
+        }
+        source = max(parts, key=lambda key: parts[key])
+        total = sum(parts.values())
+        share = (parts[source] / total) if total > 0 else 0.0
+        return source, round(share, 3)
+
+    def _reason_text(self, course_id: str, source: str) -> str:
+        if source == "content":
+            return f"Matches your interest in {self.meta[course_id]['sector_name']}"
+        if source == "collaborative":
+            return "Learners with a similar history took this"
+        return "Widely taken across the catalogue"
 
     def similar(self, course_id: str, k: int = settings.DEFAULT_K) -> list[dict]:
         pairs = self.content.similar(course_id, k)
-        return [self._one(cid, s, "Similar content") for cid, s in pairs if cid in self.meta]
+        return [self._one(cid, s, "Similar content", "content", 1.0) for cid, s in pairs if cid in self.meta]
 
     def search(self, query: str, k: int = 20) -> list[dict]:
         scores = self.content.query_scores(query)
@@ -208,12 +239,15 @@ class Recommender:
         items = []
         for c in ranked:
             mfield = self.meta[c].get("field_name")
+            in_declared = mfield in field_set
             reason = (
-                f"Matches interest in {mfield}"
-                if mfield in field_set
-                else f"Cross-over from {mfield}"
+                f"Matches your declared interest in {mfield}"
+                if in_declared
+                else f"Adjacent to your interests, from {mfield}"
             )
-            items.append(self._one(c, float(score[c]), reason))
+            items.append(
+                self._one(c, float(score[c]), reason, "interests" if in_declared else "adjacent")
+            )
 
         counts: dict[str, int] = {}
         for c in ranked:
@@ -294,7 +328,8 @@ class Recommender:
         }
 
     # ---------- helpers ----------
-    def _one(self, course_id: str, score: float, reason: str) -> dict:
+    def _one(self, course_id: str, score: float, reason: str,
+             reason_source: str = "popularity", reason_share: float | None = None) -> dict:
         m = self.meta[course_id]
         return {
             "course_id": course_id,
@@ -309,7 +344,18 @@ class Recommender:
             "instructor_id": m["instructor_id"],
             "score": round(float(score), 4),
             "reason": reason,
+            # Which component the reason is attributed to, and what share of the
+            # blended score it accounted for. Exposed so the explanation can be
+            # checked against the ranking rather than taken on trust.
+            "reason_source": reason_source,
+            "reason_share": reason_share,
         }
 
-    def _decorate(self, ids: list[str], reason: str) -> list[dict]:
-        return [self._one(c, self.pop_scores.get(c, 0.0), reason) for c in ids if c in self.meta]
+    def _decorate(self, ids: list[str], reason: str, reason_source: str = "popularity") -> list[dict]:
+        # Non-personalized paths are wholly attributable to one source, so the
+        # share is 1.0 rather than unknown.
+        return [
+            self._one(c, self.pop_scores.get(c, 0.0), reason, reason_source, 1.0)
+            for c in ids
+            if c in self.meta
+        ]
